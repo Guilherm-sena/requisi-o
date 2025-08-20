@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requisição de Materiais</title>
+<style>
+  :root { --bg:#f7fafc; --card:#fff; --prim:#0ea5e9; --text:#0f172a; --muted:#64748b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--text); }
+  .wrap { max-width:720px; margin:0 auto; padding:16px; }
+  h2 { margin:12px 0 8px; }
+  .card { background:var(--card); border-radius:16px; box-shadow:0 6px 18px rgba(15,23,42,.06); padding:16px; margin:14px 0; }
+  label { font-weight:600; font-size:14px; display:block; margin:10px 0 6px; }
+  input, select { width:100%; padding:12px; border:1px solid #e2e8f0; border-radius:12px; font-size:16px; }
+  .grid { display:grid; gap:10px; }
+  .g2 { grid-template-columns:1fr 1fr; }
+  @media (max-width:560px){ .g2 { grid-template-columns:1fr; } }
+  .btn { width:100%; padding:12px; border:none; border-radius:12px; background:var(--prim); color:#fff; font-weight:700; font-size:16px; margin-top:12px; }
+  .btn.outline { background:#fff; color:var(--prim); border:2px solid var(--prim); }
+  .pill { display:inline-block; padding:6px 10px; background:#e2e8f0; border-radius:999px; font-size:12px; color:#0f172a; }
+  .list { display:flex; flex-direction:column; gap:10px; }
+  .row { padding:12px; border:1px solid #e2e8f0; border-radius:12px; background:#fff; }
+  .row h4 { margin:0 0 6px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .small { font-size:12px; }
+
+  /* Linha de itens: input de busca + select (filtrado) + quantidade + remover */
+  .item-row { display:grid; grid-template-columns: 1fr 1fr 110px 44px; gap:8px; align-items:center; margin-top:8px; }
+  @media (max-width:680px){
+    .item-row { grid-template-columns: 1fr 110px 44px; }
+    .item-row .search { grid-column: 1 / -1; }
+  }
+  @media (max-width:420px){
+    .item-row { grid-template-columns: 1fr; }
+    .item-row .qty, .item-row .del { width:100%; }
+  }
+  .del { background:#ef4444; color:#fff; border:none; border-radius:10px; height:44px; }
+  .ok  { background:#22c55e; color:#fff; border:none; border-radius:10px; height:44px; padding:0 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>📦 Requisição de Materiais</h2>
+
+  <!-- FORM PRINCIPAL -->
+  <div class="card">
+    <label>Técnico</label>
+    <select id="tecnico"></select>
+
+    <h3>Endereço</h3>
+    <label>Logradouro</label>
+    <input id="logradouro" placeholder="Rua, Av., etc.">
+
+    <div class="grid g2">
+      <div>
+        <label>Número</label>
+        <input id="numero" inputmode="numeric" pattern="[0-9]*" placeholder="Ex.: 123">
+      </div>
+      <div>
+        <label>Complemento</label>
+        <input id="complemento" placeholder="Apto, casa, etc.">
+      </div>
+    </div>
+
+    <div class="grid g2">
+      <div>
+        <label>Bairro</label>
+        <input id="bairro">
+      </div>
+      <div>
+        <label>Cidade</label>
+        <input id="cidade">
+      </div>
+    </div>
+
+    <h3 style="margin-top:14px;">Itens</h3>
+    <div id="itensArea"></div>
+    <button class="btn outline" id="addItemBtn">+ Adicionar item</button>
+
+    <button class="btn" id="enviarBtn">Enviar requisição</button>
+  </div>
+
+  <!-- HISTÓRICO -->
+  <div class="card">
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+      <button class="btn outline" id="histBtn">Carregar meu histórico</button>
+      <button class="btn outline" onclick="location.reload()">Atualizar</button>
+    </div>
+    <div id="historico" class="list"></div>
+  </div>
+</div>
+
+<script>
+const WORKER_URL = 'https://late-bread-07d1.almox4htctelecom.workers.dev/'; // 🔁 SUBSTITUA
+
+// Estado
+let ITENS = []; // [{codigo, desc}]
+
+// Utils
+function qs(id){ return document.getElementById(id); }
+function onlyInt(el){ el.value = el.value.replace(/\D+/g,''); }
+
+// API helpers (sem preflight: x-www-form-urlencoded)
+async function apiGet(params){
+  const url = WORKER_URL + '?' + new URLSearchParams(params).toString();
+  const r = await fetch(url, { method:'GET' });
+  return r.json();
+}
+async function apiPost(params){
+  const body = new URLSearchParams(params).toString();
+  const r = await fetch(WORKER_URL, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+    body
+  });
+  return r.json();
+}
+
+// Init
+(async function init(){
+  const data = await apiGet({action:'init'});
+  // Técnicos
+  qs('tecnico').innerHTML = (data.tecnicos||[]).map(t=>`<option>${t}</option>`).join('');
+  // Itens
+  ITENS = data.itens || [];
+  addItemRow(); // uma linha por padrão
+})();
+
+// UI — itens
+const itensArea = qs('itensArea');
+qs('addItemBtn').onclick = addItemRow;
+
+function addItemRow(){
+  const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random());
+  const row = document.createElement('div');
+  row.className = 'item-row';
+  row.dataset.id = id;
+
+  // Campo de busca por item (filtra o select)
+  const search = document.createElement('input');
+  search.className = 'search';
+  search.placeholder = 'Pesquisar item (código ou nome)';
+  search.oninput = () => filterSelectOptions(select, search.value);
+
+  // Select com todos os itens (é filtrado pelo campo de busca)
+  const select = document.createElement('select');
+  select.className = 'select';
+  fillSelectOptions(select, ITENS);
+
+  // Quantidade (inteiro)
+  const qty = document.createElement('input');
+  qty.className = 'qty';
+  qty.type = 'number';
+  qty.min = '1';
+  qty.step = '1';
+  qty.value = '1';
+  qty.inputMode = 'numeric';
+  qty.oninput = () => onlyInt(qty);
+
+  // Remover
+  const del = document.createElement('button');
+  del.className = 'del';
+  del.textContent = 'Excluir';
+  del.onclick = () => row.remove();
+
+  row.appendChild(search);
+  row.appendChild(select);
+  row.appendChild(qty);
+  row.appendChild(del);
+  itensArea.appendChild(row);
+}
+
+function fillSelectOptions(selectEl, itens){
+  selectEl.innerHTML = itens.map(i => `<option value="${i.codigo}">${i.codigo} - ${i.desc}</option>`).join('');
+}
+function filterSelectOptions(selectEl, term){
+  const t = (term||'').toLowerCase();
+  const filtered = ITENS.filter(i =>
+    i.codigo.toLowerCase().includes(t) ||
+    (i.desc||'').toLowerCase().includes(t)
+  );
+  fillSelectOptions(selectEl, filtered.length ? filtered : ITENS);
+}
+
+// Coleta do formulário
+function coletarItens(){
+  const rows = [...document.querySelectorAll('.item-row')];
+  const itens = [];
+  for(const r of rows){
+    const sel = r.querySelector('select');
+    const qtd = r.querySelector('.qty');
+    if(sel && sel.value && Number(qtd.value)>0){
+      itens.push({ codigo: sel.value, qtd: Number(qtd.value) });
+    }
+  }
+  return itens;
+}
+function getEndereco(){
+  return {
+    logradouro:  qs('logradouro').value.trim(),
+    numero:      qs('numero').value.trim(),
+    complemento: qs('complemento').value.trim(),
+    bairro:      qs('bairro').value.trim(),
+    cidade:      qs('cidade').value.trim()
+  };
+}
+
+// Enviar
+qs('enviarBtn').onclick = async ()=>{
+  const tecnico = qs('tecnico').value;
+  const itens = coletarItens();
+  if(!itens.length){ alert('Adicione pelo menos um item.'); return; }
+  // número só inteiro (reforço)
+  const numero = qs('numero'); onlyInt(numero);
+
+  const res = await apiPost({
+    action:'salvar',
+    tecnico,
+    endereco: JSON.stringify(getEndereco()),
+    itens: JSON.stringify(itens)
+  });
+  if(res.ok){
+    alert('Requisição enviada! ID: ' + res.requisicaoId);
+    itensArea.innerHTML = '';
+    addItemRow();
+  }else{
+    alert(res.msg || 'Erro ao salvar.');
+  }
+};
+
+// Histórico
+qs('histBtn').onclick = async ()=>{
+  const tecnico = qs('tecnico').value;
+  const data = await apiGet({action:'historico', tecnico});
+  renderHistorico(data);
+};
+
+function groupByReq(linhas){
+  const g = {};
+  for(const r of linhas){
+    (g[r.RequisicaoID] ||= {info:r, itens:[]}).itens.push(r);
+  }
+  return g;
+}
+function fmt(d){ return new Date(d).toLocaleString(); }
+
+function renderHistorico(linhas){
+  const wrap = qs('historico');
+  wrap.innerHTML = '';
+  const g = groupByReq(linhas||[]);
+  Object.keys(g).sort((a,b)=> g[b].info.DataHora - g[a].info.DataHora).forEach(reqId=>{
+    const bloco = g[reqId]; const info = bloco.info;
+    const div = document.createElement('div');
+    div.className = 'row';
+    div.innerHTML = `
+      <h4>Requisição ${reqId}</h4>
+      <div class="muted small">${fmt(info.DataHora)}</div>
+      <div style="margin:8px 0;">
+        <span class="pill">${info.Logradouro}, ${info.Numero} ${info.Complemento?('- '+info.Complemento):''}</span>
+        <span class="pill">${info.Bairro} - ${info.Cidade}</span>
+      </div>
+      <div class="list" style="gap:6px;">
+        ${bloco.itens.map(i=>`
+          <div style="display:flex; gap:8px; align-items:center;">
+            <div class="small muted" style="min-width:110px">${i.ItemCodigo}</div>
+            <input type="number" min="0" step="1" inputmode="numeric" value="${i.Quantidade}" data-linha="${i.LinhaID}" style="width:120px; padding:8px; border:1px solid #e2e8f0; border-radius:10px;">
+            <span class="pill">${i.Status}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <button class="ok" onclick="salvarQuantidades('${reqId}')">Salvar quantidades</button>
+        <button class="btn outline" onclick="abrirEditarEndereco('${reqId}','${(info.Logradouro||'').replace(/"/g,'&quot;')}','${(info.Numero||'').replace(/"/g,'&quot;')}','${(info.Complemento||'').replace(/"/g,'&quot;')}','${(info.Bairro||'').replace(/"/g,'&quot;')}','${(info.Cidade||'').replace(/"/g,'&quot;')}')">Editar endereço</button>
+      </div>
+    `;
+    wrap.appendChild(div);
+  });
+}
+
+// Salvar quantidades
+async function salvarQuantidades(reqId){
+  const container = [...document.querySelectorAll('.row')].find(r => r.innerHTML.includes(`Requisição ${reqId}`));
+  const inputs = container.querySelectorAll('input[type=number][data-linha]');
+  for(const inp of inputs){ inp.value = inp.value.replace(/\D+/g,''); }
+  for(const inp of inputs){
+    const linhaId = inp.dataset.linha;
+    const novaQtd = inp.value;
+    const res = await apiPost({ action:'editarQtd', linhaId, novaQtd });
+    if(!res.ok){ alert(res.msg || 'Falha ao atualizar.'); return; }
+  }
+  alert('Quantidades atualizadas!');
+}
+
+// Modal de endereço
+function abrirEditarEndereco(reqId, logradouro, numero, complemento, bairro, cidade){
+  const overlay = document.createElement('div');
+  overlay.style.position='fixed'; overlay.style.inset='0'; overlay.style.background='rgba(0,0,0,.35)';
+  overlay.style.display='flex'; overlay.style.alignItems='center'; overlay.style.justifyContent='center'; overlay.style.padding='12px';
+  overlay.innerHTML = `
+    <div class="card" style="width:100%; max-width:520px; background:#fff;">
+      <h3>Editar endereço (${reqId})</h3>
+      <label>Logradouro</label>
+      <input id="elog" value="${(logradouro||'')}">
+      <div class="grid g2">
+        <div>
+          <label>Número</label>
+          <input id="enum" inputmode="numeric" pattern="[0-9]*" value="${(numero||'')}">
+        </div>
+        <div>
+          <label>Complemento</label>
+          <input id="ecomp" value="${(complemento||'')}">
+        </div>
+      </div>
+      <div class="grid g2">
+        <div>
+          <label>Bairro</label>
+          <input id="ebairro" value="${(bairro||'')}">
+        </div>
+        <div>
+          <label>Cidade</label>
+          <input id="ecidade" value="${(cidade||'')}">
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <button class="ok" id="saveEnd">Salvar</button>
+        <button class="del" id="closeEnd">Fechar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#closeEnd').onclick = ()=> overlay.remove();
+  overlay.querySelector('#saveEnd').onclick = async ()=>{
+    const payload = {
+      action:'editarEndereco',
+      requisicaoId: reqId,
+      endereco: JSON.stringify({
+        logradouro: overlay.querySelector('#elog').value.trim(),
+        numero: overlay.querySelector('#enum').value.replace(/\D+/g,''),
+        complemento: overlay.querySelector('#ecomp').value.trim(),
+        bairro: overlay.querySelector('#ebairro').value.trim(),
+        cidade: overlay.querySelector('#ecidade').value.trim()
+      })
+    };
+    const res = await apiPost(payload);
+    if(res.ok){ alert('Endereço atualizado!'); overlay.remove(); } else { alert(res.msg||'Erro ao salvar.'); }
+  };
+}
+</script>
+</body>
+</html>
